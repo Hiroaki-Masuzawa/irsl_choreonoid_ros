@@ -1,3 +1,16 @@
+robot:
+  model:  &rbmodel
+    'package://irsl_choreonoid_ros/sample/openlab2023/arm_robot3_r1.body'
+  name: &robot_name
+    'arm_robot3'
+  initial_coords: { pos: [0, 0, 0.1] }
+  initial_joint_angles: [0, 0, 0.5, 0, 0]
+  fix: True
+  BodyROSItem: ## for choreonoid_ros
+      name_space: *robot_name
+  ROSControlItem: ## for choreonoid_ros
+      name_space: *robot_name
+
 world:
   World:
     name: MyWorld
@@ -10,6 +23,14 @@ world:
     lookUp: [0., 0., 1.0]
     lookAtCenter: [0., 0., 0.7]
   WorldROS: ## if using choreonoid_ros
+  ROS:
+    generate:
+      robot: *rbmodel
+      name_space : *robot_name
+      controllers:
+        - name: 'trajectory_controller'
+          type: 'position'
+          joints: ['servo1', 'servo2', 'servo3', 'servo4', 'servo5']
 #  ROS: ## WIP
 #     urdf_settings:
 #          file: <file>
@@ -25,14 +46,6 @@ world:
 #            parameter: {int: 1, str: 'str', float: 0.5, list: [0, 0, 0] }
 #          - parameter: { myparam_wo: {a: 1, b: 1} }
 
-robot:
-  model: 'package://irsl_choreonoid_ros/sample/openlab2023/arm_robot3_r1.body'
-  name: 'MyRobot'
-  initial_coords: { pos: [0, 0, 0.1] }
-  initial_joint_angles: [0, 0, 0.5, 0, 0]
-  fix: True
-  # BodyROSItem: ## for choreonoid_ros
-  # ROSControlItem: ## for choreonoid_ros
 
 objects:
   -
