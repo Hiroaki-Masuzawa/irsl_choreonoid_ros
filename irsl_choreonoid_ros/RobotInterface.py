@@ -7,7 +7,16 @@ import rospy
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.msg import JointTrajectoryControllerState
 from std_msgs.msg import Header as std_msgs_header
-## TODO: action
+
+# action
+import actionlib
+from control_msgs.msg import FollowJointTrajectoryAction
+from control_msgs.msg import FollowJointTrajectoryGoal
+from control_msgs.msg import GripperCommandAction
+from control_msgs.msg import GripperCommandGoal
+from control_msgs.msg import GripperCommandFeedback
+from control_msgs.msg import GripperCommandResult
+from control_msgs.msg import GripperCommand
 
 # choreonoid
 import cnoid.Body
@@ -271,17 +280,55 @@ class JointInterface(object):
                 gp = self.joint_groups[group]
             gp.sendAngles(tm)
 
-    def sendAngleVector(self, angle_vector, tm=None, group=None):
+    def sendAngleVector(self, angle_vector, tm=None, group=None, wait=False, waitTimeout=None):
         """Sending angle-vector to the actual robot. angle_vector is set to self.robot
 
         Args:
-            angle_vector (numpy.array) : Vector of angles
+            angle_vector (numpy.array) : Vector of angles of whole body
             tm (float) : Moving duration in second
             group (str or list[str], optional): Name(s) of group to be used
+            wait (boolean, defaut=False) : Wait until finishing moveving
+            waitTimeout (float, optional) : Pass to waitUntilFinish
 
         """
         self.jointRobot.angleVector(angle_vector)
         self.sendAngles(tm=tm, group=group)
+        if wait:
+            self.waitUntilFinish(group=group, timeout=waitTimeout)
+
+    def sendAngleVectorSequence(self, angle_vector_list, tm_list, group=None, wait=False, waitTimeout=None):
+        """
+        Args:
+            angle_vector_list ( list [numpy.array] ) : List of vectors of angles
+            tm_list ( list[ float ] ) : List of moving durations in second
+            group (str or list[str], optional): Name(s) of group to be used
+            wait (bolean, default=False) : wait until finishing move
+            waitTimeout (float, optional) : Pass to waitUntilFinish
+
+        """
+        tp = type(group)
+        if tp is not list and tp is not tuple:
+            if group is None:
+                group = [ self.default_group ]
+            else:
+                group = [ self.joint_groups[group] ]
+        _group=[]
+        for g in group:
+            if type(g) == JointGroupCombined:
+                _group.extend(g.groups)
+            else:
+                _group.append(g)
+        vec_list_group = []
+        for i in range(len(_group)):
+            vec_list_group.append([])
+        for angle_vector in angle_vector_list:
+            self.jointRobot.angleVector(angle_vector)
+            for idx, gp in enumerate(_group):
+                vec_list_group[idx].append(gp.getAngleVector())
+        for gp, vec in zip(_group, vec_list_group):
+            gp.sendAnglesSequence(vec, tm_list)
+        if wait:
+            self.waitUntilFinish(group=group, timeout=waitTimeout)
 
     def sendAngleMap(self, angle_map, tm, group=None):
         """Sending angles to the actual robot. angles is set to self.robot
@@ -295,6 +342,8 @@ class JointInterface(object):
         for name, angle in angle_map.items():
             self.jointRobot.joint(name).q = angle
         self.sendAngles(tm=tm, group=group)
+        if wait:
+            self.waitUntilFinish(group=group, timeout=waitTimeout)
 
     def isFinished(self, group = None):
         """Checking method for finishing to send angles
@@ -340,6 +389,9 @@ class JointInterface(object):
                 gp = self.joint_groups[group]
             return gp.waitUntilFinish(timeout)
 
+    def cancel(self):
+        pass
+
 class JointGroupBase(object):
     def __init__(self, name, robot=None):
         self._robot = robot
@@ -354,9 +406,19 @@ class JointGroupBase(object):
                 print('JointGroupTopic({}): joint-name: {} is invalid'.format(name, j))
             else:
                 self.joints.append(j)
+
+    def getAngleVector(self, whole_angles=None):
+        if whole_angles is not None:
+            self.robot.angleVector(whole_angles)
+        return [j.q for j in self.joints]
+
     @property
     def name(self):
         return self._group_name
+
+    @property
+    def robot(self):
+        return self._robot
 
     @property
     def jointNames(self):
@@ -373,10 +435,16 @@ class JointGroupBase(object):
     def sendAngles(self, tm = None):
         pass
 
+    def sendAnglesSequence(self, vec_list, tm_list):
+        pass
+
     def isFinished(self):
         return True
 
     def waitUntilFinish(self, timeout=None):
+        pass
+
+    def cancel(self):
         pass
 
 class JointGroupTopic(JointGroupBase):
@@ -395,7 +463,7 @@ class JointGroupTopic(JointGroupBase):
             return True
         return False
 
-    def sendAngles(self, tm = None): ## override
+    def sendAngles(self, tm = None):  ## override
         if tm is None:
             ### TODO: do not use hard coded number
             tm = 4.0
@@ -406,6 +474,19 @@ class JointGroupTopic(JointGroupBase):
         point.time_from_start = rospy.Duration(tm)
         msg.points.append(point)
         self.finish_time = rospy.get_rostime() + rospy.Duration(tm)
+        self.pub.publish(msg)
+
+    def sendAnglesSequence(self, vec_list, tm_list):  ## override
+        msg = JointTrajectory()
+        msg.joint_names = self.joint_names
+        time_ = 0.0
+        for vec, tm in zip(vec_list, tm_list):
+            point = JointTrajectoryPoint()
+            point.positions = vec
+            time_ += tm
+            point.time_from_start = rospy.Duration(time_)
+            msg.points.append(point)
+        self.finish_time = rospy.get_rostime() + rospy.Duration(time_)
         self.pub.publish(msg)
 
     def isFinished(self):  ## override
@@ -429,8 +510,54 @@ class JointGroupAction(JointGroupBase):
         super().__init__(name, robot)
         self.setJointNames(group['joint_names'])
         ##
-        print('JointGroupAction not implemented', file=sys.stderr)
-        raise Exception
+        self._client = actionlib.SimpleActionClient(group['topic'],  FollowJointTrajectoryAction)
+
+    @property
+    def connected(self):  ## override
+        return self._client.wait_for_server(rospy.Duration(0.0001))
+
+    def sendAngles(self, tm=None):  ## override
+        if tm is None:
+            ### TODO: do not use hard coded number
+            tm = 4.0
+        header_ = std_msgs_header(stamp=rospy.Time(0))
+        _traj = JointTrajectory(header=header_, joint_names=self.joint_names)
+
+        point = JointTrajectoryPoint()
+        point.positions = [j.q for j in self.joints]
+        point.time_from_start = rospy.Duration(tm)
+        _traj.points.append(point)
+
+        _goal = FollowJointTrajectoryGoal(trajectory=_traj, goal_time_tolerance=rospy.Time(0.1))
+        self._client.send_goal(_goal)
+
+    def sendAnglesSequence(self, vec_list, tm_list):  ## override
+        header_ = std_msgs_header(stamp=rospy.Time(0))
+        _traj = JointTrajectory(header=header_, joint_names=self.joint_names)
+        time_ = 0.0
+        for vec, tm in zip(vec_list, tm_list):
+            point = JointTrajectoryPoint()
+            point.positions = vec
+            time_ += tm
+            point.time_from_start = rospy.Duration(time_)
+            _traj.points.append(point)
+        _goal = FollowJointTrajectoryGoal(trajectory=_traj, goal_time_tolerance=rospy.Time(0.1))
+        self._client.send_goal(_goal)
+
+    def isFinished(self):  ## override
+        return self._client.simple_state != actionlib.SimpleGoalState.ACTIVE
+
+    def waitUntilFinish(self, timeout=None):  ## override
+        if timeout is None:
+            timeout = rospy.Duration(1000000000.0)
+        else:
+            if timeout <= 0.0:
+                timeout = 0.001
+            timeout = rospy.Duration(timeout)
+        self._client.wait_for_result(timeout)
+
+    def cancel(self):
+        self._client.cancel_all_goals()
 
 class JointGroupCombined(JointGroupBase):
     def __init__(self, group, name, robot=None):
@@ -439,11 +566,16 @@ class JointGroupCombined(JointGroupBase):
 
     def setGroups(self, dict_group):
         self.groups = []
+        _jnames=[]
         for gn in self.group_names:
             if gn in dict_group:
-                self.groups.append(dict_group[gn])
+                gp=dict_group[gn]
+                _jnames.extend(gp.jointNames)
+                self.groups.append(gp)
             else:
                 raise Exception('group name : {} is not defined'.format(gn))
+        self.setJointNames(_jnames)
+
     @property
     def connected(self):  ## override
         return all( [ g.connected for g in self.groups ] )
@@ -452,14 +584,21 @@ class JointGroupCombined(JointGroupBase):
         for g in self.groups:
             g.sendAngles(tm)
 
+    def sendAnglesSequence(self, vec_list, tm_list):  ## override
+        ## TODO: fix
+        for g in self.groups:
+            g.sendAnglesSequence(vec_list, tm_list)
+
     def isFinished(self):  ## override
         return all( [ g.isFinished() for g in self.groups ] )
 
     def waitUntilFinish(self, timeout=None):  ## override
-        res = []
         for g in self.groups:
-            res.append(g.waitUntilFinish(timeout))
-        return all(res)
+            g.waitUntilFinish(timeout)
+
+    def cancel(self): ## override
+        for g in self.groups:
+            g.cancel()
 
 #
 # DeviceInterface
@@ -801,7 +940,7 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
 
         Args:
             file_name (str) : Name of setting.yaml file
-            node_name (str) : Name of node
+            node_name (str, default='robot_interface') : Name of node
             anonymous (boolean, default = False) : If True, ROS node will start with this node-name.
             connection_wait (float, default=3.0) : Wait until ROS connection has established
             connection (boolean, default=True) : If false, create instace without ROS connection
@@ -811,6 +950,7 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
             self.info = yaml.safe_load(f)
         self.__load_robot()
         #
+        self.__connection=False
         if not connection:
             return
         #
@@ -822,6 +962,7 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
         MobileBaseInterface.__init__(self, self.info)
 
         tmp = rospy.get_rostime()
+        connect_=False
         while (rospy.get_rostime() - tmp).to_sec() < connection_wait:
             res = True
             if self.mobile_initialized:
@@ -834,8 +975,10 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
                 if not self.device_connected:
                     res = False
             if res:
+                connect_=True
                 break
             rospy.sleep(0.1)
+        self.__connection=connect_
 
     def __load_robot(self):
         if 'robot_model' in self.info:
@@ -855,9 +998,16 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
 
             if 'class' in mdl:
                 if 'import' in mdl:
-                    # print('from {} import {}'.format(mdl['import'], mdl['class']))
-                    exec('from {} import {}'.format(mdl['import'], mdl['class']), locals(), globals())
-                    exec('self.model_cls = {}'.format(mdl['class']), locals(), globals())
+                    import_ = mdl['import']
+                    import_[-2:]
+                    if '://' in import_ or import_[-3:] == '.py':
+                        fname = parseURLROS(import_)
+                        exec(open(fname).read(), locals(), globals())
+                        exec('self.model_cls = {}'.format(mdl['class']), locals(), globals())
+                    else:
+                        # print('from {} import {}'.format(mdl['import'], mdl['class']))
+                        exec('from {} import {}'.format(import_, mdl['class']), locals(), globals())
+                        exec('self.model_cls = {}'.format(mdl['class']), locals(), globals())
                 else:
                     exec('self.model_cls = {}'.format(mdl['class']), locals(), globals())
             else:
@@ -879,6 +1029,18 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
             rb = iu.loadRobot(self.model_file)
         return self.model_cls(rb)
 
+    def getActualRobotModel(self, asItem=True):
+        """Return an instance of RobotModel (irsl_choreonoid.robot_util.RobotModelWrapped) with RobotInterface internal robot-model
+
+        Args:
+            asItem(boolean, default=True) : If True, model is generated as cnoid.BodyPlugin.BodyItem
+
+        Returns:
+            irsl_choreonoid.robot_util.RobotModelWrapped : RobotModel created from RobotInterface internal robot-model
+
+        """
+        return self.model_cls(self.robot)
+
     def copyRobot(self):
         """Return other instance of the robot model
 
@@ -890,6 +1052,25 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
 
         """
         return iu.loadRobot(self.model_file)
+
+    def isRealRobot(self):
+        """Checking this interface working with a real robot
+
+        Args:
+            None
+
+        Retuns:
+            boolean : If True, this interface connected to a real robot, otherwise connected to simulator
+
+        """
+        res_ = rospy.has_param('/use_sim_time')
+        if res_:
+            res_ = rospy.get_param('/use_sim_time')
+        return not res_
+
+    @property
+    def connected(self):
+        return self.__connection
 
     @property
     def effortVector(self):
@@ -988,3 +1169,123 @@ class RobotInterface(JointInterface, DeviceInterface, MobileBaseInterface):
 # av = robot_model.angleVector()
 # ri.sendAngleVector(av, 2.0)
 # data = ri.data('TOF_sensor0')
+
+class GripperInterface(object):
+    def __init__(self, topic):
+        self._client = actionlib.SimpleActionClient(topic, GripperCommandAction)
+
+    @property
+    def connected(self):  ## override
+        return self._client.wait_for_server(rospy.Duration(0.0001))
+
+    def sendCommand(self, position, max_effort=10.0):
+        com_ = GripperCommand(position=position, max_effort=max_effort)
+        goal_ = GripperCommandGoal(command=com_)
+        self._client.send_goal(goal_)
+
+    def isFinished(self):  ## override
+        return _client.simple_state != actionlib.SimpleGoalState.ACTIVE
+
+    def waitUntilFinish(self, timeout=None):  ## override
+        if timeout is None:
+            timeout = rospy.Duration(1000000000.0)
+        else:
+            if timeout <= 0.0:
+                timeout = 0.001
+            timeout = rospy.Duration(timeout)
+        self._client.wait_for_result(timeout)
+
+    def cancel(self):
+        self._client.cancel_all_goals()
+
+class GripperAction(object):
+    def __init__(self, gripper_topic, trajectory_topic, joint_names,
+                 position_to_positions=None, effort_to_duration=None):
+        self._action_name = gripper_topic
+        self._as = actionlib.SimpleActionServer(self._action_name,
+                                                GripperCommandAction,
+                                                execute_cb=self.execute_cb,
+                                                auto_start = False)
+
+        self._target_ac = actionlib.SimpleActionClient(trajectory_topic, FollowJointTrajectoryAction)
+        self._as.start()
+
+        self._joint_names = joint_names
+        self._position_to_positions = position_to_positions
+        self._effort_to_duration = effort_to_duration
+
+    def waitForServer(self, timeout=None):
+        if timeout is not None:
+            tm = rospy.Duration(timeout)
+            return self._target_ac.wait_for_server(tm)
+        else:
+            return self._target_ac.wait_for_server()
+
+    def sendTrajectoryFromGripperGoal(self, goal):
+        header_ = std_msgs_header(stamp=rospy.Time(0))
+        traj_ = JointTrajectory(header=header_, joint_names=self._joint_names)
+
+        point = JointTrajectoryPoint()
+        if self._position_to_positions is not None:
+            point.positions = self._position_to_positions(goal.command.position)
+        else:
+            point.positions = [0.0] * len(self._joint_names)
+
+        if self._effort_to_duration is not None:
+            point.time_from_start = rospy.Duration(self._effort_to_duration(goal.command.max_effort))
+        else:
+            point.time_from_start = rospy.Duration(1.0)
+
+        traj_.points.append(point)
+
+        goal_ = FollowJointTrajectoryGoal(trajectory=traj_, goal_time_tolerance=rospy.Time(0.1))
+        #print('before / st: {}'.format(self._target_ac.simple_state))
+        self._target_ac.send_goal(goal_)
+        #print('after / st: {}'.format(self._target_ac.simple_state))
+
+    def execute_cb(self, goal):
+        # helper variables
+        r = rospy.Rate(20)
+        success = True
+
+        ## publish info to the console for the user
+        rospy.loginfo('%s: Executing' % (self._action_name))
+
+        self.sendTrajectoryFromGripperGoal(goal)
+
+        while True:
+            # check that preempt has not been requested by the client
+            if self._as.is_preempt_requested():
+                rospy.loginfo('%s: Preempted' % self._action_name)
+                self._as.set_preempted()
+                self._target_ac.cancel_all_goals()
+                success = False
+                break
+            # publish the feedback
+            fd_ = GripperCommandFeedback()
+            ## TODO: set value to feedback
+            self._as.publish_feedback(fd_)
+
+            res_ = self._target_ac.wait_for_result(rospy.Duration(0.001))
+            if res_:
+                rospy.loginfo('res_ = {} (state: {})'.format(res_, self._target_ac.simple_state))
+                success = True
+                break
+
+            # check finish of target
+            if self._target_ac.simple_state != actionlib.SimpleGoalState.ACTIVE:
+                rospy.loginfo('%s: finished (state: %d)' % (self._action_name, self._target_ac.simple_state))
+                if self._target_ac.simple_state == actionlib.SimpleGoalState.PENDING:
+                    rospy.logwarn('%s: not started (state: %d)' % (self._action_name, self._target_ac.simple_state))
+                    self._as.set_preempted()
+                    self._target_ac.cancel_all_goals()
+                    success = False
+                break
+
+            r.sleep()
+
+        if success:
+            res_ = GripperCommandResult()
+            #TODO: set value to result
+            rospy.loginfo('%s: Succeeded' % self._action_name)
+            self._as.set_succeeded(res_)
