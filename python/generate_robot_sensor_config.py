@@ -50,6 +50,6 @@ if __name__=='__main__':
     for idx in range(num_device):
         dev = rbody.getDevice(idx)
         print("    '{}':".format(idx))
-        print("        address: 'XXXX' # Input sensor address. color sensor is 0x70. Other sensor is 0x29.")
+        print("        address: 'XXXX' # Input sensor address. color sensor and tof sensor sensor is 0x29.")
         print("        name: XXXX # input sensor type. ex. ColorSensorPublisher, TOFPublisher " )
         print("        topic_name: XXXX/value # Input sensor topic name")
