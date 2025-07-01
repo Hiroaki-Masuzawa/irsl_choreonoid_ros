@@ -42,7 +42,7 @@ class TransformListener(tf.TransformListener):
             rostime (rospy.Time): The time at which to wait for the transformation.
             timeout_sec (float, optional): The timeout duration in seconds. Defaults to 1.0.
         """
-        self.waitForTransform(origin_frame, target_frame, time, rospy.Duration(timeout_sec))
+        self.waitForTransform(origin_frame, target_frame, rostime, rospy.Duration(timeout_sec))
 
     def tryWaiting(self, origin_frame, target_frame, rostime, timeout_sec=1.0):
         """
@@ -58,7 +58,7 @@ class TransformListener(tf.TransformListener):
             bool: True if the transformation becomes available, False otherwise.
         """
         try:
-            self.waitForTransform(origin_frame, target_frame, time, rospy.Duration(timeout_sec))
+            self.waitForTransform(origin_frame, target_frame, rostime, rospy.Duration(timeout_sec))
         except Exception as e:
             rospy.logwarn('{}'.format(e))
             return False

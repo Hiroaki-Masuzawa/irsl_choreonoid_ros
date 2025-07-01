@@ -12,10 +12,13 @@ from sensor_msgs.msg import LaserScan
 #from std_msgs.msg import Header
 # isnan
 
-def unpack_rgb(fval):
-    # cast float32 to int so that bitwise operations are possible
-    s = struct.pack('>f', fval)
-    i = struct.unpack('>l', s)[0]
+def unpack_rgb(val):
+    if type(val) == float :
+        # cast float32 to int so that bitwise operations are possible
+        s = struct.pack('>f', fval)
+        i = struct.unpack('>l', s)[0]
+    elif type(val) == int :
+        i = val
     # you can get back the float value by the inverse operations
     pack = ctypes.c_uint32(i).value
     r = (pack & 0x00FF0000)>> 16
@@ -57,6 +60,7 @@ def convertPointCloud2ToPointsRaw(pc2msg, skip_nans=True, nanValue=None, ROI=Non
         if len(pc2msg.fields) > 3:
             if pc2msg.fields[3].name == 'rgb':
                 _addColor = True
+                pc2msg.fields[3].datatype=PointField.UINT32
     #
     gen = pc2.read_points(pc2msg, skip_nans=skip_nans, uvs=uvs)
     #
@@ -64,7 +68,7 @@ def convertPointCloud2ToPointsRaw(pc2msg, skip_nans=True, nanValue=None, ROI=Non
         points.append( np.array([ data[0], data[1], data[2] ]) )
         if _addColor:
             r, g, b = unpack_rgb(data[3])
-            colors.append( np.array([r, g, b]) )
+            colors.append( np.array([r, g, b])/255.0 )
     return points, colors
 
 def convertPointCloud2ToPoints(pc2msg, skip_nans=True, nanValue=None, ROI=None, addColor=True, **kwargs):
