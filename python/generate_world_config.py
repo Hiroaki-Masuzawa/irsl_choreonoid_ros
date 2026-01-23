@@ -1,35 +1,12 @@
 #!/usr/bin/python3
 import pathlib
-import os
 import argparse
 import yaml
-import sys
 
-try:
-    import cnoid.Body
-    import cnoid.Util
-except ImportError:
-    import sys
-    import shutil
-    choreonoid_bin_path = shutil.which('choreonoid')
-    if choreonoid_bin_path is None:
-        print('Error: choreonoid is not found.', file=sys.stderr)
-        sys.exit(1)
-    choreonoid_bin_dir_path = os.path.dirname(choreonoid_bin_path)
-    choreonoid_share_path = os.path.join(choreonoid_bin_dir_path, '../share')
-    chorenoid_ver = [dirname[dirname.find('choreonoid-')+len('choreonoid-'):] for dirname in os.listdir(choreonoid_share_path) if dirname.find('choreonoid-') != -1]
-    if len(chorenoid_ver) > 0:
-        chorenoid_ver = chorenoid_ver[0]
-    else :
-        chorenoid_ver = None
-    choreonoid_python_path = os.path.join(choreonoid_bin_dir_path, '../lib/choreonoid-{}/python'.format(chorenoid_ver))
-    print(choreonoid_python_path)
-    if choreonoid_python_path is None or not os.path.exists(choreonoid_python_path):
-        print('Error: choreonoid_python_path not found.', file=sys.stderr)
-        sys.exit(1)
-    sys.path.append(choreonoid_python_path)
-    import cnoid.Body
-    import cnoid.Util
+import irsl_choreonoid.cnoid_util as iu
+
+from generate_utils import get_jointnamelist
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -43,35 +20,11 @@ if __name__ == '__main__':
     parser.add_argument('--offsety', type=float, default="0.0")
     parser.add_argument('--offsetz', type=float, default="0.0")
     parser.add_argument('--joint_controller_name', type=str, default="joint_controller")
-    parser.add_argument('--wheel_controller_name', type=str, default="wheel_controller")
-    parser.add_argument('--wheeljoints', nargs="*", type=str, default=[])
     args = parser.parse_args()
 
     fname = str(args.bodyfile)
-    if not os.path.isfile(str(fname)):
-        print("File is not exist.", file=sys.stderr)
-        print("Please check file : {}".format(fname), file=sys.stderr)
-        exit(1)
-
-    rbody = cnoid.Body.BodyLoader().load(str(args.bodyfile))
-    if rbody is None:
-        print("File is broken.", file=sys.stderr)
-        print("Please check file : {}".format(fname), file=sys.stderr)
-        exit(1)
-
-    rbody.updateLinkTree()
-    rbody.initializePosition()
-    rbody.calcForwardKinematics()
-
-    joint_list = []
-
-    num_link = rbody.getNumLinks()
-    num_joint = rbody.getNumJoints()
-    num_device = rbody.getNumDevices()
-
-    for idx in range(num_joint):
-        joint = rbody.getJoint(idx)
-        joint_list.append(joint)
+    rbody = iu.loadRobot(fname)
+    jointnames = get_jointnamelist(rbody)
 
     p = pathlib.Path(args.bodyfile)
     bodyfile_path = str(p.resolve())
@@ -82,7 +35,7 @@ if __name__ == '__main__':
                         'model': bodyfile_path,
                         'name': robotname,
                         'initial_coords': {'pos': [args.offsetx, args.offsety, args.offsetz]},
-                        'initial_joint_angles': [0 for _ in range(num_joint)],
+                        'initial_joint_angles': [0 for _ in range(len(jointnames))],
                         'fix': True,
                         'BodyROSItem': {'name_space': robotname},
                         'ROSControlItem': {'name_space': robotname}
@@ -108,7 +61,7 @@ if __name__ == '__main__':
                                              {
                                                  'name': args.joint_controller_name,
                                                  'type': 'position',
-                                                 'joints': sorted([j.jointName for j in joint_list if j.jointName not in args.wheeljoints])
+                                                 'joints': sorted([name for name in jointnames])
                                              }
                                          ]
                                          }
@@ -122,6 +75,5 @@ if __name__ == '__main__':
                         }
                     ]
                     }
-    if len(args.wheeljoints) > 0:
-        world_config['world']['ROS']['generate']['controllers'].append({'name':args.wheel_controller_name, 'type':'position', 'joints': sorted([j.jointName for j in joint_list if j.jointName in args.wheeljoints]) })
+
     print(yaml.dump(world_config, indent=2, sort_keys=False))
