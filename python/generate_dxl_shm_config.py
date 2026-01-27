@@ -3,7 +3,6 @@ import argparse
 import sys
 
 from irsl_choreonoid.robot_util import RobotModelWrapped as RobotModel
-import irsl_choreonoid.cnoid_util as iu
 
 def print_config(joint_names, output=None):
     """
@@ -13,7 +12,7 @@ def print_config(joint_names, output=None):
     if output is None:
         output = sys.stdout
     text = f"""\
-# This file is configlation for irsl_dynamixel_hardware_shm
+# This file is configuration for irsl_dynamixel_hardware_shm
 
 dynamixel_hardware_shm:
   port_name: /dev/ttyUSB0
@@ -36,8 +35,7 @@ if __name__=='__main__':
     
     args = parser.parse_args()
     fname = args.bodyfile
-    rbody = iu.loadRobot(fname)
-    robot = RobotModel(rbody)
+    robot = RobotModel.loadModel(fname)
     joint_names = robot.jointNames
 
     print_config(joint_names)
